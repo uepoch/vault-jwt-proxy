@@ -44,7 +44,11 @@ func main() {
 		panic(err)
 	}
 
-	s := Server{l: logger}
+	ts, err := NewTokenStore(*tokenCaching, logger, *vaultAddr)
+	if err != nil {
+		logger.Fatal("can't create token store", zap.Error(err))
+	}
+	s := Server{l: logger, store: ts}
 
 	logger.Info("Server starting...")
 	err = http.ListenAndServe(fmt.Sprintf("%s:%d", bindAddr.String(), *bindPort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

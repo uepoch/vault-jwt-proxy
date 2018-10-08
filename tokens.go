@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"time"
 
 	"go.uber.org/zap"
@@ -13,7 +16,7 @@ import (
 )
 
 type Token struct {
-	*api.TokenAuth
+	Client          *api.Client
 	Value           string
 	Period          time.Duration
 	Refresher       *time.Ticker
@@ -21,10 +24,27 @@ type Token struct {
 	ctx             context.Context
 }
 
-func (ts *TokenStore) NewToken(value string, period time.Duration) (*Token, error) {
+func (ts *TokenStore) NewToken(value string) (*Token, error) {
 	ctx := context.WithValue(context.Background(), CtxLoggerKey, ts.l.With(zap.String("token-prefix", value[:10])))
-	t := &Token{Value: value, Period: period, Refresher: time.NewTicker(period), TokenAuth: ts.Client.Auth().Token(), ctx: ctx}
-	t.Bootstrap()
+	client, err := ts.Client.Clone()
+	if err != nil {
+		return nil, err
+	}
+	client.SetToken(value)
+	s, err := client.Auth().Token().LookupSelf()
+	if err != nil {
+		return nil, err
+	}
+	ttlRaw, ok := s.Data["ttl"].(json.Number)
+	if !ok {
+		return nil, fmt.Errorf("error while converting ttl from token")
+	}
+	ttl, err := ttlRaw.Int64()
+	if err != nil {
+		return nil, fmt.Errorf("error while extracting ttl from token: %s", err.Error())
+	}
+	t := &Token{Value: value, Refresher: time.NewTicker(time.Duration(ttl/2) * time.Second), Client: client, ctx: ctx}
+	t.Bootstrap(ts.cacheEnabled)
 	return t, nil
 }
 
@@ -35,79 +55,109 @@ func (t *Token) Logger() *zap.Logger {
 	return zap.NewNop()
 }
 
-func (t *Token) Bootstrap() {
+func (t *Token) Bootstrap(enableRefresh bool) {
 	l := t.Logger()
-	go func() {
-		for range t.Refresher.C {
-			t.Refresh()
-		}
-	}()
+
+	if enableRefresh {
+		go func() {
+			for range t.Refresher.C {
+				t.Refresh()
+			}
+		}()
+	}
 	l.Debug("token boostrapped")
 }
 
 func (t *Token) Refresh() {
-	_, err := t.RenewSelf(1)
+	_, err := t.Client.Auth().Token().RenewSelf(0)
 	if err != nil {
 	}
 	t.LastRefreshTime = time.Now()
 	t.Logger().Info("token refreshed", zap.Time("refresh-time", t.LastRefreshTime))
 }
 
+func (t *Token) Cancel() {
+	t.Client.Auth().Token().RevokeSelf(t.Value)
+	t.Logger().Debug("token cancelled")
+}
+
 type TokenStore struct {
-	*lru.Cache
-	*api.Client
+	Cache        *lru.Cache
+	Client       *api.Client
 	cacheEnabled bool
 	l            *zap.Logger
 }
 
-func NewTokenStore(size int, logger *zap.Logger) (*TokenStore, error) {
-	t := &TokenStore{}
+func NewTokenStore(size int, logger *zap.Logger, vaultAddr *url.URL) (*TokenStore, error) {
+	ts := &TokenStore{}
 
-	t.l = logger
+	ts.l = logger
 
 	conf := api.DefaultConfig()
-	conf.Address = (*vaultAddr).String()
+	conf.Address = vaultAddr.String()
+	client, err := api.NewClient(conf)
+	if err != nil {
+		return nil, err
+	}
+	ts.Client = client
 	if size < 0 {
 		return nil, fmt.Errorf("you have to pass a positive value in size for NewTokenStore")
 	}
 	if size == 0 {
-		t.l.Info("Token caching disabled")
-		t.cacheEnabled = false
+		ts.l.Info("Token caching disabled")
+		ts.cacheEnabled = false
 	} else {
-		cache, err := lru.NewWithEvict(size, t.tokenEviction)
+		cache, err := lru.NewWithEvict(size, ts.tokenEviction)
 		if err != nil {
 			return nil, err
 		}
-		t.l = t.l.With(zap.Int("size", size))
-		t.l.Info("Token caching enabled")
-		t.Cache = cache
-		t.cacheEnabled = true
+		ts.l = ts.l.With(zap.Int("size", size))
+		ts.l.Info("Token caching enabled")
+		ts.Cache = cache
+		ts.cacheEnabled = true
 	}
-	return t, nil
+	return ts, nil
 }
 
 func (ts *TokenStore) tokenEviction(key interface{}, value interface{}) {
-
-	ts.Auth().Token().RevokeSelf(value.(string))
+	tok, ok := value.(*Token)
+	if !ok || tok == nil {
+		ts.l.Error(fmt.Sprintf("can't revoke token for key: %+v and value: %+v"))
+		return
+	}
+	tok.Cancel()
 }
 
 func (ts *TokenStore) GetToken(jwt *jwt.Token) (*Token, error) {
 	var tok *Token
+	hash := fmt.Sprintf("%x", md5.Sum([]byte(jwt.Raw)))
+	l := ts.l.With(zap.String("jwt-md5", hash))
 	if ts.cacheEnabled {
-		if tRaw, ok := ts.Cache.Get(jwt.Signature); ok {
+		if tRaw, ok := ts.Cache.Get(hash); ok {
 			t, ok := tRaw.(*Token)
 			if !ok {
 				return nil, fmt.Errorf("bad token stored")
 			}
+			l.Debug("token is in cache")
 			tok = t
 		}
 	}
 	if tok == nil {
-		s, err := ts.Logical().Write(fmt.Sprintf("auth/%s/login", jwtPath), map[string]interface{}{"jwt": jwt.Raw, "role": role})
+		s, err := ts.Client.Logical().Write(fmt.Sprintf("auth/%s/login", *jwtPath), map[string]interface{}{"jwt": jwt.Raw, "role": role})
 		if err != nil {
 			return nil, err
 		}
-		_ = s
+		if s.Auth == nil || s.Auth.ClientToken == "" {
+			return nil, fmt.Errorf("missing client token in response from vault when getting token")
+		}
+		tok, err = ts.NewToken(s.Auth.ClientToken)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if ts.cacheEnabled {
+		ts.Cache.Add(hash, tok)
+		l.Debug("token registered in cache")
 	}
 	return tok, nil
 }
