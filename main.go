@@ -50,8 +50,10 @@ func main() {
 	}
 	s := Server{l: logger, store: ts}
 
-	logger.Info("Server starting...")
+	logger.Info("Server starting...", zap.Int("port", *bindPort), zap.String("addr", bindAddr.String()))
+	defer logger.Info("Server stopped.", zap.Int("port", *bindPort), zap.String("addr", bindAddr.String()))
 	err = http.ListenAndServe(fmt.Sprintf("%s:%d", bindAddr.String(), *bindPort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Host = (*vaultAddr).Hostname()
 		s.LoggerInit(s.JWTExtract(s.VaultTokenAssign(httputil.NewSingleHostReverseProxy(*vaultAddr)))).ServeHTTP(w, r)
 	}))
 	if err != nil {

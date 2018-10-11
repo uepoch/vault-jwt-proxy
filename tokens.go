@@ -25,7 +25,13 @@ type Token struct {
 }
 
 func (ts *TokenStore) NewToken(value string) (*Token, error) {
-	ctx := context.WithValue(context.Background(), CtxLoggerKey, ts.l.With(zap.String("token-prefix", value[:10])))
+	var l zap.Field
+	if ts.l.Core().Enabled(zap.DebugLevel) {
+		l = zap.String("token", value)
+	} else {
+		l = zap.String("token-prefix", value[:8])
+	}
+	ctx := context.WithValue(context.Background(), CtxLoggerKey, ts.l.With(l))
 	client, err := ts.Client.Clone()
 	if err != nil {
 		return nil, err
@@ -122,7 +128,7 @@ func NewTokenStore(size int, logger *zap.Logger, vaultAddr *url.URL) (*TokenStor
 func (ts *TokenStore) tokenEviction(key interface{}, value interface{}) {
 	tok, ok := value.(*Token)
 	if !ok || tok == nil {
-		ts.l.Error(fmt.Sprintf("can't revoke token for key: %+v and value: %+v"))
+		ts.l.Error(fmt.Sprintf("can't revoke token for key: %+v and value: %+v", key, value))
 		return
 	}
 	tok.Cancel()

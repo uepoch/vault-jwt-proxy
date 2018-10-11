@@ -15,9 +15,11 @@ import (
 	"go.uber.org/zap"
 )
 
+type ctxKey int
+
 const (
-	CtxLoggerKey = "logger"
-	CtxJWTKey    = "jwt"
+	CtxLoggerKey ctxKey = iota
+	CtxJWTKey
 )
 
 type Server struct {
