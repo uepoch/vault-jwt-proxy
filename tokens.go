@@ -15,8 +15,31 @@ import (
 	"github.com/hashicorp/vault/api"
 )
 
+type RoleAssignator interface {
+	RoleFromClaims(claims jwt.MapClaims) string
+}
+
+type RoleStatic string
+
+func (r RoleStatic) RoleFromClaims(_ jwt.MapClaims) string {
+	return string(r)
+}
+
+type RoleMap map[string]string
+
+func (r RoleMap) RoleFromClaims(m jwt.MapClaims) string {
+	var ok bool
+	for r, v := range r {
+		if _, ok = m[r]; ok {
+			return v
+		}
+	}
+	return ""
+}
+
 type Token struct {
 	Client          *api.Client
+	HashKey         string
 	Value           string
 	Period          time.Duration
 	Refresher       *time.Ticker
@@ -92,12 +115,14 @@ type TokenStore struct {
 	Client       *api.Client
 	cacheEnabled bool
 	l            *zap.Logger
+	rs           RoleAssignator
 }
 
-func NewTokenStore(size int, logger *zap.Logger, vaultAddr *url.URL) (*TokenStore, error) {
+func NewTokenStore(size int, logger *zap.Logger, vaultAddr *url.URL, rs RoleAssignator) (*TokenStore, error) {
 	ts := &TokenStore{}
 
 	ts.l = logger
+	ts.rs = rs
 
 	conf := api.DefaultConfig()
 	conf.Address = vaultAddr.String()
@@ -117,8 +142,7 @@ func NewTokenStore(size int, logger *zap.Logger, vaultAddr *url.URL) (*TokenStor
 		if err != nil {
 			return nil, err
 		}
-		ts.l = ts.l.With(zap.Int("size", size))
-		ts.l.Info("Token caching enabled")
+		ts.l.Info("Token caching enabled", zap.Int("size", size))
 		ts.Cache = cache
 		ts.cacheEnabled = true
 	}
@@ -134,10 +158,30 @@ func (ts *TokenStore) tokenEviction(key interface{}, value interface{}) {
 	tok.Cancel()
 }
 
-func (ts *TokenStore) GetToken(jwt *jwt.Token) (*Token, error) {
+func (ts *TokenStore) RemoveToken(tok *Token) error {
+	tok.Cancel()
+	if !ts.cacheEnabled {
+		return fmt.Errorf("cache not enabled")
+	}
+	ts.Cache.Remove(tok.HashKey)
+	return nil
+}
+
+func (ts *TokenStore) GetToken(jwtTok *jwt.Token) (*Token, error) {
 	var tok *Token
-	hash := fmt.Sprintf("%x", md5.Sum([]byte(jwt.Raw)))
+
+	hash := fmt.Sprintf("%x", md5.Sum([]byte(jwtTok.Raw)))
 	l := ts.l.With(zap.String("jwt-md5", hash))
+
+	claimMap, ok := jwtTok.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, fmt.Errorf("jwt token claims can't be converted in a map")
+	}
+	role := ts.rs.RoleFromClaims(claimMap)
+	if role == "" {
+		return nil, fmt.Errorf("role is empty")
+	}
+
 	if ts.cacheEnabled {
 		if tRaw, ok := ts.Cache.Get(hash); ok {
 			t, ok := tRaw.(*Token)
@@ -149,19 +193,27 @@ func (ts *TokenStore) GetToken(jwt *jwt.Token) (*Token, error) {
 		}
 	}
 	if tok == nil {
-		s, err := ts.Client.Logical().Write(fmt.Sprintf("auth/%s/login", *jwtPath), map[string]interface{}{"jwt": jwt.Raw, "role": role})
+		l.Debug("Logging in Vault", zap.String("jwt", jwtTok.Raw), zap.String("role", role))
+		s, err := ts.Client.Logical().Write(fmt.Sprintf("auth/%s/login", *jwtPath), map[string]interface{}{"jwt": jwtTok.Raw, "role": role})
 		if err != nil {
 			return nil, err
 		}
 		if s.Auth == nil || s.Auth.ClientToken == "" {
 			return nil, fmt.Errorf("missing client token in response from vault when getting token")
 		}
+		l = l.With(zap.String("token", s.Auth.ClientToken))
 		tok, err = ts.NewToken(s.Auth.ClientToken)
 		if err != nil {
 			return nil, err
 		}
 	}
 	if ts.cacheEnabled {
+		exp, ok := claimMap["exp"]
+		if !ok {
+			l.Warn("can't determine expiration for vault token from jwt. Will not renew it")
+			return tok, nil
+		}
+		time.AfterFunc(time.Until(time.Unix(int64(exp.(float64)), 0)), func() { ts.RemoveToken(tok) })
 		ts.Cache.Add(hash, tok)
 		l.Debug("token registered in cache")
 	}
