@@ -9,7 +9,7 @@ before_deploy:
 - PROJECT=$(basename $PWD)
 - go get github.com/mitchellh/gox
 - gox -os "linux" -arch "386 amd64 arm arm64" -output "./bin/{{.OS}}_{{.Arch}}/${PROJECT}"
-- for i in ./bin/*; do cp "$i/${PROJECT}" . && tar -cvf "${PROJECT}-${TRAVIS_TAG//v/}.${i##*/}.tar.gz" $PROJECT LICENSE; rm "${PROJECT}"; done
+- for i in ./bin/*; do cp "$i/${PROJECT}" . && tar -cvf "${PROJECT}-${TRAVIS_TAG//v/}_${i##*/}.tar.gz" $PROJECT LICENSE; rm "${PROJECT}"; done
 deploy:
   provider: releases
   file_glob: true
