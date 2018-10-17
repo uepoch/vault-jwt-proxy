@@ -13,16 +13,16 @@ import (
 )
 
 var (
-	verbosity = kingpin.Flag("log-level", "Log level").Short('l').Default("info").Enum("debug", "info")
-	role      = kingpin.Flag("role", "The roles to be used against vault server for provided claims.").Short('r').String()
+	verbosity = kingpin.Flag("log-level", "Log level").Short('l').Envar("JWT_PROXY_LOG_LEVEL").Default("info").Enum("debug", "info")
+	role      = kingpin.Flag("role", "The roles to be used against vault server for provided claims.").Envar("JWT_PROXY_ROLE").Short('r').String()
 	vaultAddr = kingpin.Flag("vault-addr", "The Vault server's address.").Envar("VAULT_ADDR").Required().URL()
-	jwtPath   = kingpin.Flag("vault-jwt-path", "The mount-path used for JWT backend in Vault server").Default("jwt").String()
+	jwtPath   = kingpin.Flag("vault-jwt-path", "The mount-path used for JWT backend in Vault server").Envar("JWT_PROXY_MOUNT_PATH").Default("jwt").String()
 
-	tokenCaching = kingpin.Flag("store-size", "Keep a LRU cache for vault tokens to fasten response time. Setting it to 0 will disable it.").Default("50").Int()
-	cookieMode   = kingpin.Flag("cookie-mode", "Cookie mode will set a cookie in the response with the JWT").Default("true").Bool()
+	tokenCaching = kingpin.Flag("store-size", "Keep a LRU cache for vault tokens to fasten response time. Setting it to 0 will disable it.").Envar("JWT_PROXY_SIZE").Default("20").Int()
+	cookieMode   = kingpin.Flag("cookie-mode", "Cookie mode will set a cookie in the response with the JWT").Default("false").Bool()
 
-	bindAddr = kingpin.Flag("bind-addr", "Address to bind the http server").Short('H').Default("127.0.0.1").IP()
-	bindPort = kingpin.Flag("bind-port", "Port to bind the http server").Short('p').Default("8080").Envar("JWT_PROXY_PORT").Int()
+	bindAddr = kingpin.Flag("bind-addr", "Address to bind the http server").Short('H').Envar("JWT_PROXY_BIND_ADDR").Default("127.0.0.1").IP()
+	bindPort = kingpin.Flag("bind-port", "Port to bind the http server").Short('p').Default("8080").Envar("JWT_PROXY_BIND_PORT").Int()
 
 	devMode          = kingpin.Flag("dev-mode", "Activate debug JWT").Bool()
 	claimToRoleStr   = kingpin.Flag("claims-to-role", "If a claim name in client JWT matches a key, it will the role specified as value.").Strings()
