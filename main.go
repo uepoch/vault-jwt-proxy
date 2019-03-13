@@ -6,6 +6,8 @@ import (
 	"net/http/httputil"
 	"regexp"
 
+	"github.com/rs/cors"
+
 	"go.uber.org/zap"
 
 	"github.com/uepoch/vault-jwt-proxy/version"
@@ -82,12 +84,18 @@ func main() {
 	logger.Info("Token store started.")
 	s := Server{l: logger, store: ts}
 
+	corsOptions := cors.Options{
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Authorization"},
+		Debug:          true,
+	}
+
 	logger.Info("Server starting...", zap.Int("port", *bindPort), zap.String("addr", bindAddr.String()))
 	defer logger.Info("Server stopped.", zap.Int("port", *bindPort), zap.String("addr", bindAddr.String()))
-	err = http.ListenAndServe(fmt.Sprintf("%s:%d", bindAddr.String(), *bindPort), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	err = http.ListenAndServe(fmt.Sprintf("%s:%d", bindAddr.String(), *bindPort), cors.New(corsOptions).Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Host = (*vaultAddr).Hostname()
 		s.LoggerInit(s.JWTExtract(s.VaultTokenAssign(httputil.NewSingleHostReverseProxy(*vaultAddr)))).ServeHTTP(w, r)
-	}))
+	})))
 	if err != nil {
 		logger.Fatal("server ended with an error", zap.Error(err))
 	}
