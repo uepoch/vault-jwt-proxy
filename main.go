@@ -87,7 +87,6 @@ func main() {
 	corsOptions := cors.Options{
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Authorization"},
-		Debug:          true,
 	}
 
 	logger.Info("Server starting...", zap.Int("port", *bindPort), zap.String("addr", bindAddr.String()))
